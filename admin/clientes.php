@@ -24,16 +24,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif (strlen($senha) < 6) {
             $errorMsg = 'A senha deve ter pelo menos 6 caracteres.';
         } else {
-            $check = $db->prepare('SELECT id FROM clientes WHERE cnpj = ?');
-            $check->execute([$cnpj]);
-            if ($check->fetch()) {
-                $errorMsg = 'Já existe um cliente com este CNPJ.';
-            } else {
-                $hash = password_hash($senha, PASSWORD_DEFAULT);
-                $db->prepare('INSERT INTO clientes (razao_social, cnpj, email, telefone, senha) VALUES (?,?,?,?,?)')
-                   ->execute([$razao, $cnpj, $email, $tel, $hash]);
-                $successMsg = "Cliente \"{$razao}\" cadastrado com sucesso!";
-                $action = '';
+            try {
+                $check = $db->prepare('SELECT id FROM clientes WHERE cnpj = ?');
+                $check->execute([$cnpj]);
+                if ($check->fetch()) {
+                    $errorMsg = 'Já existe um cliente com este CNPJ (' . $cnpj . ').';
+                } else {
+                    $hash = password_hash($senha, PASSWORD_DEFAULT);
+                    $stmtInsert = $db->prepare('INSERT INTO clientes (razao_social, cnpj, email, telefone, senha, ativo) VALUES (?,?,?,?,?,1)');
+                    $result = $stmtInsert->execute([$razao, $cnpj, $email, $tel, $hash]);
+                    
+                    if ($result) {
+                        $successMsg = "Cliente \"{$razao}\" cadastrado com sucesso!";
+                        $action = ''; // Volta para a listagem
+                    } else {
+                        $errorMsg = 'Erro ao inserir no banco de dados. Verifique as permissões.';
+                    }
+                }
+            } catch (Exception $e) {
+                $errorMsg = 'Erro no sistema: ' . $e->getMessage();
             }
         }
     }

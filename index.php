@@ -144,10 +144,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
       </button>
     </form>
 
-    <div class="demo-box">
-      <strong>🔑 Dados de demonstração:</strong>
-      CNPJ: <code>12.345.678/0001-90</code> &nbsp;|&nbsp; Senha: <code>123456</code>
-    </div>
+<!-- Dados de demonstração removidos para produção -->
 
     <div class="login-features">
       <div class="login-feature">

@@ -85,19 +85,8 @@ try {
     ");
     $results[] = ['ok', 'Tabela `historico_status` criada/verificada.'];
 
-    // Inserir clientes de demonstração se não existirem
-    $count = $db->query('SELECT COUNT(*) FROM clientes')->fetchColumn();
-    if ($count == 0) {
-        $db->exec("
-            INSERT INTO `clientes` (`razao_social`, `cnpj`, `email`, `telefone`, `senha`) VALUES
-            ('Condomínio Residencial Primavera', '12.345.678/0001-90', 'primavera@email.com', '(11) 99999-0001', '" . password_hash('123456', PASSWORD_DEFAULT) . "'),
-            ('Condomínio Edifício Central',      '98.765.432/0001-10', 'central@email.com',   '(11) 99999-0002', '" . password_hash('123456', PASSWORD_DEFAULT) . "'),
-            ('Associação Moradores Vila Nova',   '11.222.333/0001-44', 'vianova@email.com',   '(11) 99999-0003', '" . password_hash('123456', PASSWORD_DEFAULT) . "')
-        ");
-        $results[] = ['ok', '3 clientes de demonstração inseridos (senha: 123456).'];
-    } else {
-        $results[] = ['info', "Clientes já existem ({$count} registros). Nenhum dado de demo inserido."];
-    }
+    // Lógica de clientes de demonstração removida para produção.
+    $results[] = ['info', 'Lógica de clientes de demonstração desativada para este ambiente de produção.'];
 
     // Verificar diretório de uploads
     if (!is_dir(__DIR__ . '/uploads')) {
