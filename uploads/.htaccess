@@ -1,0 +1,8 @@
+# Bloquear execução de PHP nos uploads
+<FilesMatch "\.(php|php3|php4|php5|phtml|pl|py|jsp|asp|sh|cgi)$">
+    Order Allow,Deny
+    Deny from all
+</FilesMatch>
+
+# Permitir apenas download de arquivos seguros
+Options -Indexes

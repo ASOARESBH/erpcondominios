@@ -1,0 +1,30 @@
+# ERP Condomínio – Sistema de Chamados
+# Configurações de compatibilidade para HostGator
+
+# Impedir listagem de diretórios (causa comum de 403 se não houver index.php)
+Options -Indexes
+
+# Garantir que o servidor reconheça o index.php como página inicial
+DirectoryIndex index.php
+
+<IfModule mod_rewrite.c>
+    RewriteEngine On
+    
+    # Se o diretório includes existir, bloqueia acesso direto mas permite o uso interno
+    # Nota: Em alguns servidores HostGator, regras muito restritivas causam 403 global
+    # Esta regra é segura:
+    RewriteRule ^includes/.*$ - [F,L]
+</IfModule>
+
+# Algumas versões do HostGator bloqueiam o acesso se houver regras de Header sem o módulo
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+</IfModule>
+
+# Configurações de PHP via .htaccess (comuns no HostGator)
+# Se der erro 500, o usuário deve remover estas linhas e configurar via cPanel (MultiPHP INI Editor)
+<IfModule mod_php.c>
+    php_value upload_max_filesize 10M
+    php_value post_max_size 12M
+</IfModule>
