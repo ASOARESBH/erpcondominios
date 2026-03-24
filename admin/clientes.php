@@ -2,6 +2,11 @@
 require_once '../includes/config.php';
 requireAdminLogin();
 
+// Ativar exibição de erros para debug (pode ser removido após testes)
+ini_set('display_errors', 1);
+ini_set('display_startup_errors', 1);
+error_reporting(E_ALL);
+
 $db = getDB();
 
 $successMsg = '';
@@ -14,35 +19,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Novo cliente
     if ($action === 'criar') {
         $razao  = trim($_POST['razao_social'] ?? '');
-        $cnpj   = formatCNPJ(preg_replace('/\D/','',$_POST['cnpj'] ?? ''));
+        $cnpj_raw = preg_replace('/\D/','',$_POST['cnpj'] ?? '');
+        $cnpj   = formatCNPJ($cnpj_raw);
         $email  = trim($_POST['email'] ?? '');
         $tel    = trim($_POST['telefone'] ?? '');
         $senha  = trim($_POST['senha'] ?? '');
 
-        if (empty($razao) || empty($cnpj) || empty($email) || empty($senha)) {
+        // Log de tentativa de cadastro
+        error_log("[CADASTRO] Tentativa de cadastro: Razão: $razao, CNPJ: $cnpj, Email: $email");
+
+        if (empty($razao) || empty($cnpj_raw) || empty($email) || empty($senha)) {
             $errorMsg = 'Preencha todos os campos obrigatórios.';
+            error_log("[CADASTRO] Erro: Campos obrigatórios vazios.");
         } elseif (strlen($senha) < 6) {
             $errorMsg = 'A senha deve ter pelo menos 6 caracteres.';
+            error_log("[CADASTRO] Erro: Senha muito curta.");
         } else {
             try {
                 $check = $db->prepare('SELECT id FROM clientes WHERE cnpj = ?');
                 $check->execute([$cnpj]);
                 if ($check->fetch()) {
                     $errorMsg = 'Já existe um cliente com este CNPJ (' . $cnpj . ').';
+                    error_log("[CADASTRO] Erro: CNPJ duplicado ($cnpj).");
                 } else {
                     $hash = password_hash($senha, PASSWORD_DEFAULT);
-                    $stmtInsert = $db->prepare('INSERT INTO clientes (razao_social, cnpj, email, telefone, senha, ativo) VALUES (?,?,?,?,?,1)');
+                    // Usando colunas explícitas e garantindo que o banco aceite
+                    $stmtInsert = $db->prepare('INSERT INTO clientes (razao_social, cnpj, email, telefone, senha, ativo, criado_em) VALUES (?, ?, ?, ?, ?, 1, NOW())');
                     $result = $stmtInsert->execute([$razao, $cnpj, $email, $tel, $hash]);
                     
                     if ($result) {
                         $successMsg = "Cliente \"{$razao}\" cadastrado com sucesso!";
+                        error_log("[CADASTRO] Sucesso: Cliente $razao cadastrado.");
                         $action = ''; // Volta para a listagem
                     } else {
-                        $errorMsg = 'Erro ao inserir no banco de dados. Verifique as permissões.';
+                        $errInfo = $stmtInsert->errorInfo();
+                        $errorMsg = 'Erro ao inserir no banco de dados: ' . ($errInfo[2] ?? 'Erro desconhecido');
+                        error_log("[CADASTRO] Erro SQL: " . print_r($errInfo, true));
                     }
                 }
             } catch (Exception $e) {
-                $errorMsg = 'Erro no sistema: ' . $e->getMessage();
+                $errorMsg = 'Erro de exceção: ' . $e->getMessage();
+                error_log("[CADASTRO] Exceção: " . $e->getMessage());
             }
         }
     }
@@ -124,6 +141,11 @@ if ($action === 'editar' && isset($_GET['id'])) {
 
       <?php if ($successMsg): ?><div class="alert alert-success"><?= sanitize($successMsg) ?></div><?php endif; ?>
       <?php if ($errorMsg):   ?><div class="alert alert-danger"><?= sanitize($errorMsg) ?></div><?php endif; ?>
+      
+      <!-- Link para ver o log de erros do PHP no servidor -->
+      <div style="margin-bottom: 1rem; font-size: 0.8rem; color: #666;">
+        Nota: Verifique o arquivo <code>error_log</code> na pasta <code>admin/</code> do seu servidor para detalhes técnicos das falhas.
+      </div>
 
       <!-- Formulário: Novo ou Editar Cliente -->
       <?php if ($action === 'novo' || $action === 'criar' && $errorMsg): ?>
