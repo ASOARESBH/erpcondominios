@@ -7,8 +7,9 @@ require_once 'includes/config.php';
 
 // Redirecionar se já estiver logado
 if (isset($_SESSION['cliente_id'])) {
-    // Redirecionamento seguro para a mesma pasta
-    header('Location: ./painel.php');
+    // Forçar redirecionamento para a pasta atual (sem sair dela)
+    $base_dir = rtrim(dirname($_SERVER['PHP_SELF']), '/\\');
+    header("Location: $base_dir/painel.php");
     exit;
 }
 
@@ -69,13 +70,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     auth_log("SUCESSO: Login realizado para ID " . $cliente['id']);
                     
-                    // Redirecionamento relativo explícito
-                    header('Location: ./painel.php');
+                    // Redirecionamento forçado para a pasta atual (resolvendo o 404 na raiz)
+                    $base_dir = rtrim(dirname($_SERVER['PHP_SELF']), '/\\');
+                    header("Location: $base_dir/painel.php");
                     exit;
                 } else {
                     $error = 'CNPJ ou senha incorretos.';
-                    auth_log("ERRO: Senha incorreta para ID " . $cliente['id']);
-                    // Log técnico: O hash no banco é: substr($cliente['senha'], 0, 10)...
+                    auth_log("ERRO: Senha incorreta para ID " . $cliente['id'] . ". Verifique se o hash no banco está correto.");
                 }
             } else {
                 $error = 'CNPJ ou senha incorretos.';

@@ -1,11 +1,16 @@
 <?php
 require_once 'includes/config.php';
-requireClientLogin();
+// Proteção de acesso sênior com redirecionamento forçado para a subpasta correta
+if (!isset($_SESSION['cliente_id'])) {
+    $base_dir = rtrim(dirname($_SERVER['PHP_SELF']), '/\\');
+    header("Location: $base_dir/index.php");
+    exit;
+}
 
 $db        = getDB();
-$clientId  = $_SESSION['client_id'];
-$clientName= $_SESSION['client_name'];
-$clientCNPJ= $_SESSION['client_cnpj'];
+$clientId  = $_SESSION['cliente_id'];
+$clientName= $_SESSION['cliente_nome'];
+$clientCNPJ= $_SESSION['cliente_cnpj'];
 
 // Buscar estatísticas do cliente
 $stats = $db->prepare('
