@@ -23,7 +23,13 @@ function crud_log($message) {
     $log_file = __DIR__ . '/crud_error.log';
     $timestamp = date('Y-m-d H:i:s');
     $log_entry = "[$timestamp] $message" . PHP_EOL;
-    file_put_contents($log_file, $log_entry, FILE_APPEND);
+    
+    // Tentativa sênior de garantir que o arquivo possa ser escrito
+    if (!file_exists($log_file)) {
+        @touch($log_file);
+        @chmod($log_file, 0666);
+    }
+    @file_put_contents($log_file, $log_entry, FILE_APPEND);
 }
 
 // Processamento de formulários com validação robusta

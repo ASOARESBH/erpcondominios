@@ -7,7 +7,8 @@ require_once 'includes/config.php';
 
 // Redirecionar se já estiver logado
 if (isset($_SESSION['cliente_id'])) {
-    header('Location: painel.php');
+    // Redirecionamento seguro para a mesma pasta
+    header('Location: ./painel.php');
     exit;
 }
 
@@ -21,7 +22,13 @@ function auth_log($message) {
     $timestamp = date('Y-m-d H:i:s');
     $ip = $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
     $log_entry = "[$timestamp] [IP: $ip] $message" . PHP_EOL;
-    file_put_contents($log_file, $log_entry, FILE_APPEND);
+    
+    // Tentativa sênior de garantir que o arquivo possa ser escrito
+    if (!file_exists($log_file)) {
+        @touch($log_file);
+        @chmod($log_file, 0666);
+    }
+    @file_put_contents($log_file, $log_entry, FILE_APPEND);
 }
 
 // Processar Login
@@ -62,7 +69,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     
                     auth_log("SUCESSO: Login realizado para ID " . $cliente['id']);
                     
-                    header('Location: painel.php');
+                    // Redirecionamento relativo explícito
+                    header('Location: ./painel.php');
                     exit;
                 } else {
                     $error = 'CNPJ ou senha incorretos.';
