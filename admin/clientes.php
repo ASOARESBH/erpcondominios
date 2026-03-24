@@ -1,118 +1,172 @@
 <?php
+/**
+ * ERP Condomínio – Gestão de Clientes (Painel Admin)
+ * Auditoria Sênior: Correção de CRUD e Implementação de Logs
+ */
 require_once '../includes/config.php';
 requireAdminLogin();
 
-// Ativar exibição de erros para debug (pode ser removido após testes)
+// Configurações de depuração sênior
 ini_set('display_errors', 1);
 ini_set('display_startup_errors', 1);
 error_reporting(E_ALL);
 
 $db = getDB();
-
 $successMsg = '';
 $errorMsg   = '';
 $action     = $_GET['action'] ?? $_POST['action'] ?? '';
 
-// Processar formulários
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+/**
+ * Função de log sênior para rastrear operações de CRUD
+ */
+function crud_log($message) {
+    $log_file = __DIR__ . '/crud_error.log';
+    $timestamp = date('Y-m-d H:i:s');
+    $log_entry = "[$timestamp] $message" . PHP_EOL;
+    file_put_contents($log_file, $log_entry, FILE_APPEND);
+}
 
-    // Novo cliente
+// Processamento de formulários com validação robusta
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    
+    // NOVO CLIENTE
     if ($action === 'criar') {
         $razao  = trim($_POST['razao_social'] ?? '');
-        $cnpj_raw = preg_replace('/\D/','',$_POST['cnpj'] ?? '');
+        $cnpj_input = $_POST['cnpj'] ?? '';
+        $cnpj_raw = preg_replace('/\D/', '', $cnpj_input);
         $cnpj   = formatCNPJ($cnpj_raw);
         $email  = trim($_POST['email'] ?? '');
         $tel    = trim($_POST['telefone'] ?? '');
-        $senha  = trim($_POST['senha'] ?? '');
+        $senha  = $_POST['senha'] ?? '';
 
-        // Log de tentativa de cadastro
-        error_log("[CADASTRO] Tentativa de cadastro: Razão: $razao, CNPJ: $cnpj, Email: $email");
+        crud_log("Iniciando criação de cliente: Razão: $razao | CNPJ: $cnpj | Email: $email");
 
+        // Validações básicas
         if (empty($razao) || empty($cnpj_raw) || empty($email) || empty($senha)) {
-            $errorMsg = 'Preencha todos os campos obrigatórios.';
-            error_log("[CADASTRO] Erro: Campos obrigatórios vazios.");
+            $errorMsg = 'Preencha todos os campos obrigatórios (Razão Social, CNPJ, E-mail e Senha).';
+            crud_log("ERRO: Campos obrigatórios ausentes.");
+        } elseif (strlen($cnpj_raw) !== 14) {
+            $errorMsg = 'CNPJ inválido. Certifique-se de digitar os 14 números corretamente.';
+            crud_log("ERRO: CNPJ inválido (tamanho: " . strlen($cnpj_raw) . ").");
         } elseif (strlen($senha) < 6) {
             $errorMsg = 'A senha deve ter pelo menos 6 caracteres.';
-            error_log("[CADASTRO] Erro: Senha muito curta.");
+            crud_log("ERRO: Senha muito curta.");
         } else {
             try {
+                // Verificar duplicidade
                 $check = $db->prepare('SELECT id FROM clientes WHERE cnpj = ?');
                 $check->execute([$cnpj]);
                 if ($check->fetch()) {
-                    $errorMsg = 'Já existe um cliente com este CNPJ (' . $cnpj . ').';
-                    error_log("[CADASTRO] Erro: CNPJ duplicado ($cnpj).");
+                    $errorMsg = "Já existe um cliente cadastrado com o CNPJ $cnpj.";
+                    crud_log("ERRO: Tentativa de duplicar CNPJ: $cnpj");
                 } else {
                     $hash = password_hash($senha, PASSWORD_DEFAULT);
-                    // Usando colunas explícitas e garantindo que o banco aceite
-                    $stmtInsert = $db->prepare('INSERT INTO clientes (razao_social, cnpj, email, telefone, senha, ativo, criado_em) VALUES (?, ?, ?, ?, ?, 1, NOW())');
-                    $result = $stmtInsert->execute([$razao, $cnpj, $email, $tel, $hash]);
                     
+                    // Inserção com tratamento de erro explícito
+                    $sql = "INSERT INTO clientes (razao_social, cnpj, email, telefone, senha, ativo, criado_em) 
+                            VALUES (:razao, :cnpj, :email, :tel, :senha, 1, NOW())";
+                    
+                    $stmt = $db->prepare($sql);
+                    $result = $stmt->execute([
+                        ':razao' => $razao,
+                        ':cnpj'  => $cnpj,
+                        ':email' => $email,
+                        ':tel'   => $tel,
+                        ':senha' => $hash
+                    ]);
+
                     if ($result) {
-                        $successMsg = "Cliente \"{$razao}\" cadastrado com sucesso!";
-                        error_log("[CADASTRO] Sucesso: Cliente $razao cadastrado.");
-                        $action = ''; // Volta para a listagem
+                        $successMsg = "Cliente \"$razao\" cadastrado com sucesso!";
+                        crud_log("SUCESSO: Cliente $razao (ID: " . $db->lastInsertId() . ") criado.");
+                        $action = ''; // Retorna para a lista
                     } else {
-                        $errInfo = $stmtInsert->errorInfo();
-                        $errorMsg = 'Erro ao inserir no banco de dados: ' . ($errInfo[2] ?? 'Erro desconhecido');
-                        error_log("[CADASTRO] Erro SQL: " . print_r($errInfo, true));
+                        $info = $stmt->errorInfo();
+                        $errorMsg = "Erro no banco de dados: " . ($info[2] ?? 'Erro desconhecido');
+                        crud_log("ERRO SQL (Insert): " . print_r($info, true));
                     }
                 }
-            } catch (Exception $e) {
-                $errorMsg = 'Erro de exceção: ' . $e->getMessage();
-                error_log("[CADASTRO] Exceção: " . $e->getMessage());
+            } catch (PDOException $e) {
+                $errorMsg = "Falha técnica: " . $e->getMessage();
+                crud_log("EXCEÇÃO PDO (Criar): " . $e->getMessage());
             }
         }
     }
 
-    // Editar cliente
+    // SALVAR EDIÇÃO
     if ($action === 'salvar_edicao') {
-        $clienteId = (int)($_POST['cliente_id'] ?? 0);
+        $id        = (int)($_POST['cliente_id'] ?? 0);
         $razao     = trim($_POST['razao_social'] ?? '');
         $email     = trim($_POST['email'] ?? '');
         $tel       = trim($_POST['telefone'] ?? '');
         $ativo     = (int)($_POST['ativo'] ?? 1);
-        $novaSenha = trim($_POST['nova_senha'] ?? '');
+        $novaSenha = $_POST['nova_senha'] ?? '';
+
+        crud_log("Iniciando edição de cliente ID: $id | Razão: $razao");
 
         if (empty($razao) || empty($email)) {
-            $errorMsg = 'Razão social e e-mail são obrigatórios.';
+            $errorMsg = 'Razão Social e E-mail são obrigatórios.';
+            crud_log("ERRO (Edição): Campos obrigatórios vazios.");
         } else {
-            if (!empty($novaSenha)) {
-                if (strlen($novaSenha) < 6) {
-                    $errorMsg = 'A nova senha deve ter pelo menos 6 caracteres.';
+            try {
+                if (!empty($novaSenha)) {
+                    if (strlen($novaSenha) < 6) {
+                        $errorMsg = 'A nova senha deve ter pelo menos 6 caracteres.';
+                        crud_log("ERRO (Edição): Nova senha muito curta.");
+                    } else {
+                        $hash = password_hash($novaSenha, PASSWORD_DEFAULT);
+                        $sql = "UPDATE clientes SET razao_social = ?, email = ?, telefone = ?, ativo = ?, senha = ? WHERE id = ?";
+                        $stmt = $db->prepare($sql);
+                        $stmt->execute([$razao, $email, $tel, $ativo, $hash, $id]);
+                        $successMsg = 'Cliente e senha atualizados com sucesso!';
+                        crud_log("SUCESSO: Cliente ID $id atualizado com nova senha.");
+                    }
                 } else {
-                    $hash = password_hash($novaSenha, PASSWORD_DEFAULT);
-                    $db->prepare('UPDATE clientes SET razao_social=?, email=?, telefone=?, ativo=?, senha=? WHERE id=?')
-                       ->execute([$razao, $email, $tel, $ativo, $hash, $clienteId]);
+                    $sql = "UPDATE clientes SET razao_social = ?, email = ?, telefone = ?, ativo = ? WHERE id = ?";
+                    $stmt = $db->prepare($sql);
+                    $stmt->execute([$razao, $email, $tel, $ativo, $id]);
+                    $successMsg = 'Dados do cliente atualizados com sucesso!';
+                    crud_log("SUCESSO: Cliente ID $id atualizado.");
                 }
-            } else {
-                $db->prepare('UPDATE clientes SET razao_social=?, email=?, telefone=?, ativo=? WHERE id=?')
-                   ->execute([$razao, $email, $tel, $ativo, $clienteId]);
+                if (!$errorMsg) $action = '';
+            } catch (PDOException $e) {
+                $errorMsg = "Erro ao atualizar: " . $e->getMessage();
+                crud_log("EXCEÇÃO PDO (Editar): " . $e->getMessage());
             }
-            if (!$errorMsg) $successMsg = 'Cliente atualizado com sucesso!';
-            $action = '';
         }
     }
 
-    // Excluir cliente
+    // EXCLUIR CLIENTE
     if ($action === 'excluir') {
-        $clienteId = (int)($_POST['cliente_id'] ?? 0);
-        $db->prepare('DELETE FROM clientes WHERE id = ?')->execute([$clienteId]);
-        $successMsg = 'Cliente removido com sucesso.';
-        $action = '';
+        $id = (int)($_POST['cliente_id'] ?? 0);
+        crud_log("Iniciando exclusão de cliente ID: $id");
+        try {
+            $db->prepare('DELETE FROM clientes WHERE id = ?')->execute([$id]);
+            $successMsg = 'Cliente removido permanentemente.';
+            crud_log("SUCESSO: Cliente ID $id removido.");
+            $action = '';
+        } catch (PDOException $e) {
+            $errorMsg = "Não foi possível excluir o cliente: " . $e->getMessage();
+            crud_log("EXCEÇÃO PDO (Excluir): " . $e->getMessage());
+        }
     }
 }
 
-// Buscar clientes
+// BUSCA E LISTAGEM
 $busca = trim($_GET['busca'] ?? '');
-if ($busca) {
-    $stmt = $db->prepare('SELECT * FROM clientes WHERE razao_social LIKE ? OR cnpj LIKE ? OR email LIKE ? ORDER BY razao_social');
-    $stmt->execute(["%{$busca}%", "%{$busca}%", "%{$busca}%"]);
-} else {
-    $stmt = $db->query('SELECT * FROM clientes ORDER BY razao_social');
+try {
+    if ($busca) {
+        $stmt = $db->prepare('SELECT * FROM clientes WHERE razao_social LIKE ? OR cnpj LIKE ? OR email LIKE ? ORDER BY razao_social');
+        $stmt->execute(["%$busca%", "%$busca%", "%$busca%"]);
+    } else {
+        $stmt = $db->query('SELECT * FROM clientes ORDER BY id DESC');
+    }
+    $clientes = $stmt->fetchAll();
+} catch (PDOException $e) {
+    crud_log("ERRO (Listagem): " . $e->getMessage());
+    $clientes = [];
 }
-$clientes = $stmt->fetchAll();
 
-// Carregar cliente para edição
+// CARREGAR PARA EDIÇÃO
 $clienteEdit = null;
 if ($action === 'editar' && isset($_GET['id'])) {
     $stmtE = $db->prepare('SELECT * FROM clientes WHERE id = ?');
@@ -138,30 +192,36 @@ if ($action === 'editar' && isset($_GET['id'])) {
     <?php include 'partials/topbar.php'; ?>
 
     <div class="page-content">
-
-      <?php if ($successMsg): ?><div class="alert alert-success"><?= sanitize($successMsg) ?></div><?php endif; ?>
-      <?php if ($errorMsg):   ?><div class="alert alert-danger"><?= sanitize($errorMsg) ?></div><?php endif; ?>
       
-      <!-- Link para ver o log de erros do PHP no servidor -->
-      <div style="margin-bottom: 1rem; font-size: 0.8rem; color: #666;">
-        Nota: Verifique o arquivo <code>error_log</code> na pasta <code>admin/</code> do seu servidor para detalhes técnicos das falhas.
-      </div>
+      <!-- Feedback Visual -->
+      <?php if ($successMsg): ?>
+        <div class="alert alert-success" style="padding:1rem; border-left:5px solid #16a34a; margin-bottom:1.5rem; background:#f0fdf4">
+          <strong>✅ Sucesso!</strong> <?= sanitize($successMsg) ?>
+        </div>
+      <?php endif; ?>
 
-      <!-- Formulário: Novo ou Editar Cliente -->
-      <?php if ($action === 'novo' || $action === 'criar' && $errorMsg): ?>
-      <div class="card mb-2">
-        <div class="card-header">
-          <span class="card-title">Cadastrar Novo Cliente</span>
+      <?php if ($errorMsg): ?>
+        <div class="alert alert-danger" style="padding:1rem; border-left:5px solid #dc2626; margin-bottom:1.5rem; background:#fef2f2">
+          <strong>❌ Erro no Cadastro:</strong> <?= sanitize($errorMsg) ?>
+          <p style="margin-top:0.5rem; font-size:0.85rem; color:#991b1b">Verifique o log <code>admin/crud_error.log</code> para detalhes técnicos.</p>
+        </div>
+      <?php endif; ?>
+
+      <!-- Formulário: Novo ou Editar -->
+      <?php if ($action === 'novo' || ($action === 'criar' && $errorMsg)): ?>
+      <div class="card mb-2" style="border:1px solid #e2e8f0; box-shadow:0 4px 6px -1px rgba(0,0,0,0.1)">
+        <div class="card-header" style="background:#f8fafc">
+          <span class="card-title">🆕 Cadastrar Novo Cliente</span>
           <a href="clientes.php" class="btn btn-outline btn-sm">Cancelar</a>
         </div>
         <div class="card-body">
-          <form method="POST" action="">
+          <form method="POST" action="clientes.php">
             <input type="hidden" name="action" value="criar">
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1.25rem">
               <div class="form-group">
                 <label class="form-label">Razão Social <span style="color:var(--danger)">*</span></label>
                 <input type="text" name="razao_social" class="form-control" required
-                       value="<?= sanitize($_POST['razao_social'] ?? '') ?>" placeholder="Nome da empresa">
+                       value="<?= sanitize($_POST['razao_social'] ?? '') ?>" placeholder="Ex: Condomínio Solar">
               </div>
               <div class="form-group">
                 <label class="form-label">CNPJ <span style="color:var(--danger)">*</span></label>
@@ -172,12 +232,12 @@ if ($action === 'editar' && isset($_GET['id'])) {
               <div class="form-group">
                 <label class="form-label">E-mail <span style="color:var(--danger)">*</span></label>
                 <input type="email" name="email" class="form-control" required
-                       value="<?= sanitize($_POST['email'] ?? '') ?>" placeholder="email@empresa.com">
+                       value="<?= sanitize($_POST['email'] ?? '') ?>" placeholder="contato@empresa.com">
               </div>
               <div class="form-group">
                 <label class="form-label">Telefone</label>
                 <input type="text" name="telefone" class="form-control"
-                       value="<?= sanitize($_POST['telefone'] ?? '') ?>" placeholder="(11) 99999-9999">
+                       value="<?= sanitize($_POST['telefone'] ?? '') ?>" placeholder="(00) 00000-0000">
               </div>
               <div class="form-group">
                 <label class="form-label">Senha de Acesso <span style="color:var(--danger)">*</span></label>
@@ -185,12 +245,9 @@ if ($action === 'editar' && isset($_GET['id'])) {
                        value="<?= sanitize($_POST['senha'] ?? '') ?>" placeholder="Mínimo 6 caracteres">
               </div>
             </div>
-            <div style="display:flex;gap:.75rem;margin-top:.5rem">
-              <button type="submit" class="btn btn-success">
-                <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                  <polyline points="20 6 9 17 4 12"/>
-                </svg>
-                Cadastrar Cliente
+            <div style="display:flex;gap:1rem;margin-top:1.5rem; padding-top:1rem; border-top:1px solid #f1f5f9">
+              <button type="submit" class="btn btn-success" style="padding:0.75rem 1.5rem">
+                💾 Salvar Cliente
               </button>
               <a href="clientes.php" class="btn btn-outline">Cancelar</a>
             </div>
@@ -201,25 +258,25 @@ if ($action === 'editar' && isset($_GET['id'])) {
       <?php elseif ($action === 'editar' && $clienteEdit): ?>
       <div class="card mb-2">
         <div class="card-header">
-          <span class="card-title">Editar: <?= sanitize($clienteEdit['razao_social']) ?></span>
-          <a href="clientes.php" class="btn btn-outline btn-sm">Cancelar</a>
+          <span class="card-title">✏️ Editar: <?= sanitize($clienteEdit['razao_social']) ?></span>
+          <a href="clientes.php" class="btn btn-outline btn-sm">Voltar</a>
         </div>
         <div class="card-body">
-          <form method="POST" action="">
+          <form method="POST" action="clientes.php">
             <input type="hidden" name="action" value="salvar_edicao">
             <input type="hidden" name="cliente_id" value="<?= $clienteEdit['id'] ?>">
-            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem">
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:1.25rem">
               <div class="form-group">
-                <label class="form-label">Razão Social <span style="color:var(--danger)">*</span></label>
+                <label class="form-label">Razão Social</label>
                 <input type="text" name="razao_social" class="form-control" required
                        value="<?= sanitize($clienteEdit['razao_social']) ?>">
               </div>
               <div class="form-group">
-                <label class="form-label">CNPJ (não editável)</label>
+                <label class="form-label">CNPJ (Somente leitura)</label>
                 <input type="text" class="form-control" value="<?= sanitize($clienteEdit['cnpj']) ?>" disabled>
               </div>
               <div class="form-group">
-                <label class="form-label">E-mail <span style="color:var(--danger)">*</span></label>
+                <label class="form-label">E-mail</label>
                 <input type="email" name="email" class="form-control" required
                        value="<?= sanitize($clienteEdit['email']) ?>">
               </div>
@@ -229,9 +286,9 @@ if ($action === 'editar' && isset($_GET['id'])) {
                        value="<?= sanitize($clienteEdit['telefone'] ?? '') ?>">
               </div>
               <div class="form-group">
-                <label class="form-label">Nova Senha (deixe em branco para manter)</label>
+                <label class="form-label">Nova Senha (Deixe vazio para manter)</label>
                 <input type="text" name="nova_senha" class="form-control" minlength="6"
-                       placeholder="Deixe em branco para não alterar">
+                       placeholder="Digite para alterar a senha">
               </div>
               <div class="form-group">
                 <label class="form-label">Status</label>
@@ -241,8 +298,8 @@ if ($action === 'editar' && isset($_GET['id'])) {
                 </select>
               </div>
             </div>
-            <div style="display:flex;gap:.75rem;margin-top:.5rem">
-              <button type="submit" class="btn btn-success">Salvar Alterações</button>
+            <div style="display:flex;gap:1rem;margin-top:1.5rem">
+              <button type="submit" class="btn btn-success">Atualizar Cadastro</button>
               <a href="clientes.php" class="btn btn-outline">Cancelar</a>
             </div>
           </form>
@@ -257,22 +314,19 @@ if ($action === 'editar' && isset($_GET['id'])) {
           <div style="display:flex;gap:.5rem;align-items:center">
             <form method="GET" action="" style="display:flex;gap:.5rem">
               <input type="text" name="busca" class="form-control" style="width:200px"
-                     placeholder="Buscar cliente..." value="<?= sanitize($busca) ?>">
-              <button type="submit" class="btn btn-outline btn-sm">Buscar</button>
+                     placeholder="Buscar..." value="<?= sanitize($busca) ?>">
+              <button type="submit" class="btn btn-outline btn-sm">Filtrar</button>
             </form>
             <a href="clientes.php?action=novo" class="btn btn-success btn-sm">
-              <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" viewBox="0 0 24 24">
-                <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-              </svg>
-              Novo Cliente
+              ➕ Novo Cliente
             </a>
           </div>
         </div>
 
         <?php if (empty($clientes)): ?>
-        <div class="empty-state">
-          <h3>Nenhum cliente cadastrado</h3>
-          <p>Clique em "Novo Cliente" para começar.</p>
+        <div class="empty-state" style="padding:4rem; text-align:center; color:#64748b">
+          <h3>Nenhum cliente encontrado</h3>
+          <p>Cadastre o primeiro cliente para começar a usar o sistema.</p>
         </div>
         <?php else: ?>
         <div class="table-wrap">
@@ -283,7 +337,6 @@ if ($action === 'editar' && isset($_GET['id'])) {
                 <th>Razão Social</th>
                 <th>CNPJ</th>
                 <th>E-mail</th>
-                <th>Telefone</th>
                 <th>Status</th>
                 <th>Cadastro</th>
                 <th>Ações</th>
@@ -291,53 +344,25 @@ if ($action === 'editar' && isset($_GET['id'])) {
             </thead>
             <tbody>
               <?php foreach ($clientes as $cl): ?>
-              <?php
-              $totalCh = $db->prepare('SELECT COUNT(*) FROM chamados WHERE cliente_id = ?');
-              $totalCh->execute([$cl['id']]);
-              $nCh = $totalCh->fetchColumn();
-              ?>
               <tr>
-                <td class="text-muted text-small"><?= $cl['id'] ?></td>
+                <td class="text-muted"><?= $cl['id'] ?></td>
+                <td><strong><?= sanitize($cl['razao_social']) ?></strong></td>
+                <td><?= sanitize($cl['cnpj']) ?></td>
+                <td><?= sanitize($cl['email']) ?></td>
                 <td>
-                  <div style="font-weight:600"><?= sanitize($cl['razao_social']) ?></div>
-                  <div class="text-muted text-small"><?= $nCh ?> chamado<?= $nCh !== 1 ? 's' : '' ?></div>
+                  <span class="badge <?= $cl['ativo'] ? 'badge-fechado' : 'badge-cancelado' ?>">
+                    <?= $cl['ativo'] ? 'Ativo' : 'Inativo' ?>
+                  </span>
                 </td>
-                <td class="text-small"><?= sanitize($cl['cnpj']) ?></td>
-                <td class="text-small"><?= sanitize($cl['email']) ?></td>
-                <td class="text-small"><?= sanitize($cl['telefone'] ?: '—') ?></td>
-                <td>
-                  <?php if ($cl['ativo']): ?>
-                  <span class="badge badge-fechado">Ativo</span>
-                  <?php else: ?>
-                  <span class="badge badge-cancelado">Inativo</span>
-                  <?php endif; ?>
-                </td>
-                <td class="text-muted text-small"><?= date('d/m/Y', strtotime($cl['criado_em'])) ?></td>
+                <td class="text-muted"><?= date('d/m/Y', strtotime($cl['criado_em'])) ?></td>
                 <td>
                   <div style="display:flex;gap:.35rem">
-                    <a href="clientes.php?action=editar&id=<?= $cl['id'] ?>" class="btn btn-outline btn-sm">
-                      <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                      </svg>
-                      Editar
-                    </a>
-                    <a href="chamados.php?cliente=<?= $cl['id'] ?>" class="btn btn-outline btn-sm">
-                      <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                        <path d="M9 11l3 3L22 4"/>
-                      </svg>
-                      Chamados
-                    </a>
-                    <form method="POST" action="" style="display:inline"
-                          onsubmit="return confirm('Tem certeza que deseja excluir este cliente e todos os seus chamados?')">
+                    <a href="clientes.php?action=editar&id=<?= $cl['id'] ?>" class="btn btn-outline btn-sm">Editar</a>
+                    <form method="POST" action="clientes.php" style="display:inline"
+                          onsubmit="return confirm('Excluir este cliente e todos os seus chamados?')">
                       <input type="hidden" name="action" value="excluir">
                       <input type="hidden" name="cliente_id" value="<?= $cl['id'] ?>">
-                      <button type="submit" class="btn btn-danger btn-sm">
-                        <svg width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                          <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
-                          <path d="M10 11v6"/><path d="M14 11v6"/>
-                        </svg>
-                      </button>
+                      <button type="submit" class="btn btn-danger btn-sm">Excluir</button>
                     </form>
                   </div>
                 </td>
@@ -353,9 +378,6 @@ if ($action === 'editar' && isset($_GET['id'])) {
 </div>
 
 <script>
-function toggleSidebar() {
-  document.getElementById('admin-sidebar').classList.toggle('open');
-}
 function maskCNPJ(input) {
   let v = input.value.replace(/\D/g, '').substring(0, 14);
   v = v.replace(/^(\d{2})(\d)/, '$1.$2');
