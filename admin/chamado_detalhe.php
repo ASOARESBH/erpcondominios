@@ -1,4 +1,8 @@
 <?php
+/**
+ * ERP Condomínio – Detalhe do Chamado (Admin)
+ * Auditoria Sênior: Correção de Finalização e Implementação de Logs
+ */
 require_once '../includes/config.php';
 requireAdminLogin();
 
@@ -10,6 +14,22 @@ if (!$id) {
     exit;
 }
 
+/**
+ * Função de log sênior para rastrear operações em chamados
+ */
+function ticket_log($message) {
+    $log_file = __DIR__ . '/ticket_debug.log';
+    $timestamp = date('Y-m-d H:i:s');
+    $log_entry = "[$timestamp] $message" . PHP_EOL;
+    
+    if (!file_exists($log_file)) {
+        @touch($log_file);
+        @chmod($log_file, 0666);
+    }
+    @file_put_contents($log_file, $log_entry, FILE_APPEND);
+}
+
+// Buscar chamado inicial
 $stmt = $db->prepare('
     SELECT c.*, cl.razao_social, cl.cnpj, cl.email, cl.telefone
     FROM chamados c
@@ -24,83 +44,113 @@ if (!$chamado) {
     exit;
 }
 
-// Processar ações POST
 $successMsg = '';
 $errorMsg   = '';
 
+// Processar ações POST
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $action = $_POST['action'] ?? '';
+    ticket_log("Ação recebida: $action para Chamado ID: $id");
 
-    // Atualizar status
-    if ($action === 'update_status') {
-        $novoStatus = $_POST['novo_status'] ?? '';
-        $obs        = trim($_POST['observacao'] ?? '');
-        $statusValidos = ['aberto','em_andamento','aguardando','fechado','cancelado'];
+    try {
+        // 1. Atualizar status (Finalização)
+        if ($action === 'update_status') {
+            $novoStatus = $_POST['novo_status'] ?? '';
+            $obs        = trim($_POST['observacao'] ?? '');
+            $statusValidos = ['aberto','em_andamento','aguardando','fechado','cancelado'];
 
-        if (in_array($novoStatus, $statusValidos) && $novoStatus !== $chamado['status']) {
-            $fechadoEm = in_array($novoStatus, ['fechado','cancelado']) ? date('Y-m-d H:i:s') : null;
+            ticket_log("Tentativa de mudar status de '{$chamado['status']}' para '$novoStatus'");
 
-            $db->prepare('UPDATE chamados SET status = ?, fechado_em = ?, atualizado_em = NOW() WHERE id = ?')
-               ->execute([$novoStatus, $fechadoEm, $id]);
+            if (in_array($novoStatus, $statusValidos)) {
+                // Mesmo que o status seja igual, permitimos salvar a observação se houver
+                $fechadoEm = in_array($novoStatus, ['fechado','cancelado']) ? date('Y-m-d H:i:s') : null;
 
-            $db->prepare('
-                INSERT INTO historico_status (chamado_id, status_de, status_para, observacao, autor)
-                VALUES (?, ?, ?, ?, "Equipe de Suporte")
-            ')->execute([$id, $chamado['status'], $novoStatus, $obs]);
+                $sqlStatus = "UPDATE chamados SET status = ?, fechado_em = ?, atualizado_em = NOW() WHERE id = ?";
+                $resStatus = $db->prepare($sqlStatus)->execute([$novoStatus, $fechadoEm, $id]);
+                
+                if ($resStatus) {
+                    ticket_log("Status atualizado com sucesso no banco.");
+                    
+                    // Registrar no histórico
+                    $db->prepare('
+                        INSERT INTO historico_status (chamado_id, status_de, status_para, observacao, autor)
+                        VALUES (?, ?, ?, ?, "Equipe de Suporte")
+                    ')->execute([$id, $chamado['status'], $novoStatus, $obs]);
 
-            // Mensagem automática para o cliente
-            $statusLabels = ['aberto'=>'Aberto','em_andamento'=>'Em Andamento','aguardando'=>'Aguardando Retorno','fechado'=>'Fechado','cancelado'=>'Cancelado'];
-            $msgAuto = "Status atualizado para: **{$statusLabels[$novoStatus]}**";
-            if ($obs) $msgAuto .= "\n\n{$obs}";
-            if ($novoStatus === 'fechado') {
-                $msgAuto .= "\n\nSeu chamado foi finalizado com sucesso! Obrigado por utilizar nosso suporte. Se precisar de mais ajuda, abra um novo chamado.";
+                    // Mensagem automática para o cliente no chat
+                    $statusLabels = [
+                        'aberto' => 'Aberto',
+                        'em_andamento' => 'Em Andamento',
+                        'aguardando' => 'Aguardando Retorno',
+                        'fechado' => 'Fechado / Resolvido',
+                        'cancelado' => 'Cancelado'
+                    ];
+                    
+                    $msgAuto = "📢 **Atualização de Status**: " . $statusLabels[$novoStatus];
+                    if ($obs) $msgAuto .= "\n\n**Observação**: " . $obs;
+                    
+                    if ($novoStatus === 'fechado') {
+                        $msgAuto .= "\n\n✅ Este chamado foi finalizado. Se precisar de mais ajuda, sinta-se à vontade para abrir um novo chamado.";
+                    }
+
+                    $db->prepare('INSERT INTO mensagens (chamado_id, autor, nome, mensagem) VALUES (?, "admin", "Equipe de Suporte", ?)')
+                       ->execute([$id, $msgAuto]);
+
+                    $successMsg = 'Chamado atualizado com sucesso!';
+                    $chamado['status'] = $novoStatus;
+                    ticket_log("Fluxo de finalização concluído com sucesso.");
+                } else {
+                    $errorMsg = 'Erro ao salvar no banco de dados.';
+                    ticket_log("ERRO: Falha na execução do UPDATE de status.");
+                }
+            } else {
+                $errorMsg = 'Status inválido informado.';
+                ticket_log("ERRO: Status '$novoStatus' não é válido.");
             }
-
-            $db->prepare('INSERT INTO mensagens (chamado_id, autor, nome, mensagem) VALUES (?, "admin", "Equipe de Suporte", ?)')
-               ->execute([$id, $msgAuto]);
-
-            $successMsg = 'Status atualizado com sucesso!';
-            $chamado['status'] = $novoStatus;
         }
-    }
 
-    // Enviar mensagem
-    if ($action === 'send_msg') {
-        $mensagem = trim($_POST['mensagem'] ?? '');
-        if (!empty($mensagem)) {
-            $db->prepare('INSERT INTO mensagens (chamado_id, autor, nome, mensagem) VALUES (?, "admin", "Equipe de Suporte", ?)')
-               ->execute([$id, $mensagem]);
-            $db->prepare('UPDATE chamados SET atualizado_em = NOW() WHERE id = ?')->execute([$id]);
-            $successMsg = 'Mensagem enviada!';
+        // 2. Enviar mensagem avulsa
+        if ($action === 'send_msg') {
+            $mensagem = trim($_POST['mensagem'] ?? '');
+            if (!empty($mensagem)) {
+                $db->prepare('INSERT INTO mensagens (chamado_id, autor, nome, mensagem) VALUES (?, "admin", "Equipe de Suporte", ?)')
+                   ->execute([$id, $mensagem]);
+                $db->prepare('UPDATE chamados SET atualizado_em = NOW() WHERE id = ?')->execute([$id]);
+                $successMsg = 'Mensagem enviada com sucesso!';
+                ticket_log("Mensagem enviada pelo admin.");
+            }
         }
-    }
 
-    // Atualizar prioridade
-    if ($action === 'update_priority') {
-        $novaPrio = $_POST['nova_prioridade'] ?? '';
-        $priosValidas = ['baixa','media','alta','critica'];
-        if (in_array($novaPrio, $priosValidas)) {
-            $db->prepare('UPDATE chamados SET prioridade = ?, atualizado_em = NOW() WHERE id = ?')
-               ->execute([$novaPrio, $id]);
-            $chamado['prioridade'] = $novaPrio;
-            $successMsg = 'Prioridade atualizada!';
+        // 3. Atualizar prioridade
+        if ($action === 'update_priority') {
+            $novaPrio = $_POST['nova_prioridade'] ?? '';
+            $priosValidas = ['baixa','media','alta','critica'];
+            if (in_array($novaPrio, $priosValidas)) {
+                $db->prepare('UPDATE chamados SET prioridade = ?, atualizado_em = NOW() WHERE id = ?')
+                   ->execute([$novaPrio, $id]);
+                $chamado['prioridade'] = $novaPrio;
+                $successMsg = 'Prioridade atualizada com sucesso!';
+                ticket_log("Prioridade alterada para $novaPrio.");
+            }
         }
+    } catch (Exception $e) {
+        $errorMsg = 'Erro interno: ' . $e->getMessage();
+        ticket_log("EXCEÇÃO: " . $e->getMessage());
     }
 }
 
-// Recarregar chamado atualizado
+// Recarregar dados do chamado após POST
 $stmt->execute([$id]);
 $chamado = $stmt->fetch();
 
-// Mensagens
-$mStmt = $db->prepare('SELECT * FROM mensagens WHERE chamado_id = ? ORDER BY criado_em ASC');
-$mStmt->execute([$id]);
-$mensagens = $mStmt->fetchAll();
+// Buscar mensagens e histórico para exibição
+$mensagens = $db->prepare('SELECT * FROM mensagens WHERE chamado_id = ? ORDER BY criado_em ASC');
+$mensagens->execute([$id]);
+$listaMensagens = $mensagens->fetchAll();
 
-// Histórico
-$hStmt = $db->prepare('SELECT * FROM historico_status WHERE chamado_id = ? ORDER BY criado_em DESC');
-$hStmt->execute([$id]);
-$historico = $hStmt->fetchAll();
+$historico = $db->prepare('SELECT * FROM historico_status WHERE chamado_id = ? ORDER BY criado_em DESC');
+$historico->execute([$id]);
+$listaHistorico = $historico->fetchAll();
 
 $sla = slaStatus($chamado['criado_em'], $chamado['prioridade'], $chamado['status']);
 ?>
@@ -135,16 +185,21 @@ $sla = slaStatus($chamado['criado_em'], $chamado['prioridade'], $chamado['status
       </div>
 
       <?php if ($successMsg): ?>
-      <div class="alert alert-success"><?= sanitize($successMsg) ?></div>
+        <div class="alert alert-success" style="border-left: 5px solid #16a34a; background: #f0fdf4; color: #166534; padding: 1rem; margin-bottom: 1.5rem; border-radius: 8px; font-weight: 500;">
+            ✅ <?= sanitize($successMsg) ?>
+        </div>
       <?php endif; ?>
+      
       <?php if ($errorMsg): ?>
-      <div class="alert alert-danger"><?= sanitize($errorMsg) ?></div>
+        <div class="alert alert-danger" style="border-left: 5px solid #dc2626; background: #fef2f2; color: #991b1b; padding: 1rem; margin-bottom: 1.5rem; border-radius: 8px; font-weight: 500;">
+            ❌ <?= sanitize($errorMsg) ?>
+        </div>
       <?php endif; ?>
 
-      <div style="display:grid;grid-template-columns:1fr 300px;gap:1.25rem;align-items:start">
+      <div style="display:grid;grid-template-columns:1fr 320px;gap:1.5rem;align-items:start">
 
         <!-- Coluna principal -->
-        <div style="display:flex;flex-direction:column;gap:1.25rem">
+        <div style="display:flex;flex-direction:column;gap:1.5rem">
 
           <!-- Info do chamado -->
           <div class="card">
@@ -153,40 +208,17 @@ $sla = slaStatus($chamado['criado_em'], $chamado['prioridade'], $chamado['status
             </div>
             <div class="card-body">
               <div class="ticket-info-grid">
-                <div class="ticket-info-item">
-                  <label>Número</label>
-                  <span class="ticket-number"><?= sanitize($chamado['numero']) ?></span>
-                </div>
-                <div class="ticket-info-item">
-                  <label>Cliente</label>
-                  <span><?= sanitize($chamado['razao_social']) ?></span>
-                </div>
-                <div class="ticket-info-item">
-                  <label>CNPJ</label>
-                  <span><?= sanitize($chamado['cnpj']) ?></span>
-                </div>
-                <div class="ticket-info-item">
-                  <label>E-mail</label>
-                  <span><?= sanitize($chamado['email']) ?></span>
-                </div>
-                <div class="ticket-info-item">
-                  <label>Telefone</label>
-                  <span><?= sanitize($chamado['telefone'] ?: 'Não informado') ?></span>
-                </div>
-                <div class="ticket-info-item">
-                  <label>Aberto em</label>
-                  <span><?= date('d/m/Y H:i', strtotime($chamado['criado_em'])) ?></span>
-                </div>
-                <div class="ticket-info-item">
-                  <label>Última atualização</label>
-                  <span><?= timeAgo($chamado['atualizado_em']) ?></span>
-                </div>
+                <div class="ticket-info-item"><label>Número</label><span class="ticket-number"><?= sanitize($chamado['numero']) ?></span></div>
+                <div class="ticket-info-item"><label>Cliente</label><span><?= sanitize($chamado['razao_social']) ?></span></div>
+                <div class="ticket-info-item"><label>CNPJ</label><span><?= sanitize($chamado['cnpj']) ?></span></div>
+                <div class="ticket-info-item"><label>E-mail</label><span><?= sanitize($chamado['email']) ?></span></div>
+                <div class="ticket-info-item"><label>Telefone</label><span><?= sanitize($chamado['telefone'] ?: 'Não informado') ?></span></div>
+                <div class="ticket-info-item"><label>Aberto em</label><span><?= date('d/m/Y H:i', strtotime($chamado['criado_em'])) ?></span></div>
+                <div class="ticket-info-item"><label>Atualização</label><span><?= timeAgo($chamado['atualizado_em']) ?></span></div>
                 <div class="ticket-info-item">
                   <label>SLA</label>
                   <div class="sla-bar-wrap <?= $sla['class'] ?>" style="min-width:160px">
-                    <div class="sla-bar-bg">
-                      <div class="sla-bar-fill" style="width:<?= $sla['percent'] ?>%"></div>
-                    </div>
+                    <div class="sla-bar-bg"><div class="sla-bar-fill" style="width:<?= $sla['percent'] ?>%"></div></div>
                     <div class="sla-label"><?= $sla['label'] ?></div>
                   </div>
                 </div>
@@ -198,13 +230,10 @@ $sla = slaStatus($chamado['criado_em'], $chamado['prioridade'], $chamado['status
               <div style="background:var(--bg);border-radius:var(--radius);padding:1rem;font-size:.9rem;line-height:1.7;white-space:pre-wrap"><?= sanitize($chamado['descricao']) ?></div>
 
               <?php if ($chamado['anexo']): ?>
-              <div style="margin-top:1rem">
-                <span style="font-weight:600">Anexo: </span>
+              <div style="margin-top:1.5rem; padding: 1rem; background: #f8fafc; border-radius: 8px; border: 1px dashed #cbd5e1;">
+                <span style="font-weight:600; display: block; margin-bottom: 0.5rem;">📎 Arquivo Anexo:</span>
                 <a href="<?= sanitize('../' . UPLOAD_URL . $chamado['anexo']) ?>" target="_blank" class="btn btn-outline btn-sm">
-                  <svg width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
-                  </svg>
-                  Baixar Anexo
+                  Baixar / Visualizar Arquivo
                 </a>
               </div>
               <?php endif; ?>
@@ -214,48 +243,39 @@ $sla = slaStatus($chamado['criado_em'], $chamado['prioridade'], $chamado['status
           <!-- Chat -->
           <div class="card">
             <div class="card-header">
-              <span class="card-title">
-                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="vertical-align:middle;margin-right:.3rem">
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                </svg>
-                Mensagens (<?= count($mensagens) ?>)
-              </span>
+              <span class="card-title">Mensagens do Atendimento</span>
             </div>
-            <div class="chat-messages" id="chat-msgs" style="max-height:380px;overflow-y:auto;padding:1rem">
-              <?php if (empty($mensagens)): ?>
-              <div class="empty-state" style="padding:1.5rem"><p>Nenhuma mensagem ainda.</p></div>
+            <div class="chat-messages" id="chat-msgs" style="max-height:450px;overflow-y:auto;padding:1.5rem; background: #f8fafc;">
+              <?php if (empty($listaMensagens)): ?>
+                <div class="empty-state"><p>Nenhuma mensagem trocada ainda.</p></div>
               <?php else: ?>
-              <?php foreach ($mensagens as $msg): ?>
-              <div class="msg-bubble <?= $msg['autor'] ?>">
-                <div><?= nl2br(sanitize($msg['mensagem'])) ?></div>
-                <div class="msg-meta"><?= sanitize($msg['nome']) ?> · <?= date('d/m H:i', strtotime($msg['criado_em'])) ?></div>
-              </div>
-              <?php endforeach; ?>
+                <?php foreach ($listaMensagens as $msg): ?>
+                <div class="msg-bubble <?= $msg['autor'] ?>">
+                  <div style="white-space: pre-wrap;"><?= nl2br(sanitize($msg['mensagem'])) ?></div>
+                  <div class="msg-meta"><?= sanitize($msg['nome']) ?> · <?= date('d/m H:i', strtotime($msg['criado_em'])) ?></div>
+                </div>
+                <?php endforeach; ?>
               <?php endif; ?>
             </div>
-            <form method="POST" action="" class="chat-input-area">
+            <form method="POST" action="" class="chat-input-area" style="padding: 1rem; border-top: 1px solid #e2e8f0;">
               <input type="hidden" name="action" value="send_msg">
-              <textarea name="mensagem" class="form-control" placeholder="Responder ao cliente..." rows="2" required></textarea>
-              <button type="submit" class="btn btn-primary">
-                <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                  <line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>
-                </svg>
-              </button>
+              <textarea name="mensagem" class="form-control" placeholder="Digite sua resposta para o cliente..." rows="3" required style="resize: none;"></textarea>
+              <button type="submit" class="btn btn-primary" style="padding: 0 1.5rem;">Enviar Resposta</button>
             </form>
           </div>
 
           <!-- Histórico -->
-          <?php if (!empty($historico)): ?>
+          <?php if (!empty($listaHistorico)): ?>
           <div class="card">
-            <div class="card-header"><span class="card-title">Histórico de Status</span></div>
+            <div class="card-header"><span class="card-title">Linha do Tempo de Status</span></div>
             <div class="card-body">
               <div class="history-list">
-                <?php foreach ($historico as $h): ?>
+                <?php foreach ($listaHistorico as $h): ?>
                 <div class="history-item">
                   <div class="history-dot"></div>
                   <div>
-                    <strong><?= sanitize($h['autor']) ?></strong>: <?= sanitize($h['status_de']) ?> → <strong><?= sanitize($h['status_para']) ?></strong>
-                    <?php if ($h['observacao']): ?><br><span class="text-muted"><?= sanitize($h['observacao']) ?></span><?php endif; ?>
+                    <strong><?= sanitize($h['autor']) ?></strong> alterou para <strong><?= sanitize($h['status_para']) ?></strong>
+                    <?php if ($h['observacao']): ?><br><span class="text-muted italic">"<?= sanitize($h['observacao']) ?>"</span><?php endif; ?>
                     <div class="text-muted text-small"><?= date('d/m/Y H:i', strtotime($h['criado_em'])) ?></div>
                   </div>
                 </div>
@@ -266,19 +286,17 @@ $sla = slaStatus($chamado['criado_em'], $chamado['prioridade'], $chamado['status
           <?php endif; ?>
         </div>
 
-        <!-- Coluna lateral: ações -->
-        <div style="display:flex;flex-direction:column;gap:1rem;position:sticky;top:80px">
+        <!-- Coluna lateral -->
+        <div style="display:flex;flex-direction:column;gap:1.5rem;position:sticky;top:80px">
 
-          <!-- Atualizar Status -->
-          <div class="card">
-            <div class="card-header">
-              <span class="card-title">Atualizar Status</span>
-            </div>
+          <!-- Ações de Status -->
+          <div class="card" style="border-top: 4px solid #16a34a;">
+            <div class="card-header"><span class="card-title">Gerenciar Status</span></div>
             <div class="card-body">
               <form method="POST" action="">
                 <input type="hidden" name="action" value="update_status">
                 <div class="form-group">
-                  <label class="form-label">Novo Status</label>
+                  <label class="form-label">Alterar para:</label>
                   <select name="novo_status" class="form-control" required>
                     <option value="aberto"       <?= $chamado['status']==='aberto'?'selected':'' ?>>🔵 Aberto</option>
                     <option value="em_andamento" <?= $chamado['status']==='em_andamento'?'selected':'' ?>>🟡 Em Andamento</option>
@@ -288,36 +306,23 @@ $sla = slaStatus($chamado['criado_em'], $chamado['prioridade'], $chamado['status
                   </select>
                 </div>
                 <div class="form-group">
-                  <label class="form-label">Observação (opcional)</label>
-                  <textarea name="observacao" class="form-control" rows="3" placeholder="Informe o que foi feito ou o motivo da atualização..."></textarea>
+                  <label class="form-label">Nota de Encerramento/Status</label>
+                  <textarea name="observacao" class="form-control" rows="3" placeholder="Descreva a solução ou motivo..."></textarea>
                 </div>
-                <button type="submit" class="btn btn-success btn-block">
-                  <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <polyline points="20 6 9 17 4 12"/>
-                  </svg>
-                  Salvar Status
+                <button type="submit" class="btn btn-success btn-block" style="height: 45px; font-weight: 600;">
+                  Salvar Alteração
                 </button>
               </form>
 
               <?php if (!in_array($chamado['status'], ['fechado','cancelado'])): ?>
               <div class="divider"></div>
-              <div style="display:flex;flex-direction:column;gap:.4rem">
+              <div style="display:flex;flex-direction:column;gap:.6rem">
                 <form method="POST" action="">
                   <input type="hidden" name="action" value="update_status">
                   <input type="hidden" name="novo_status" value="fechado">
-                  <input type="hidden" name="observacao" value="Chamado finalizado pela equipe de suporte.">
-                  <button type="submit" class="btn btn-success btn-block btn-sm"
-                          onclick="return confirm('Confirma o fechamento deste chamado?')">
-                    ✅ Fechar Chamado (Resolvido)
-                  </button>
-                </form>
-                <form method="POST" action="">
-                  <input type="hidden" name="action" value="update_status">
-                  <input type="hidden" name="novo_status" value="cancelado">
-                  <input type="hidden" name="observacao" value="Chamado cancelado pela equipe.">
-                  <button type="submit" class="btn btn-danger btn-block btn-sm"
-                          onclick="return confirm('Confirma o cancelamento deste chamado?')">
-                    ❌ Cancelar Chamado
+                  <input type="hidden" name="observacao" value="Chamado resolvido e finalizado pela equipe de suporte.">
+                  <button type="submit" class="btn btn-success btn-block btn-sm" onclick="return confirm('Deseja realmente finalizar este chamado como RESOLVIDO?')">
+                    🏁 Finalizar Agora (Resolvido)
                   </button>
                 </form>
               </div>
@@ -325,18 +330,18 @@ $sla = slaStatus($chamado['criado_em'], $chamado['prioridade'], $chamado['status
             </div>
           </div>
 
-          <!-- Alterar Prioridade -->
+          <!-- Prioridade -->
           <div class="card">
-            <div class="card-header"><span class="card-title">Prioridade</span></div>
+            <div class="card-header"><span class="card-title">Ajustar Prioridade</span></div>
             <div class="card-body">
               <form method="POST" action="">
                 <input type="hidden" name="action" value="update_priority">
                 <div class="form-group">
                   <select name="nova_prioridade" class="form-control">
-                    <option value="baixa"   <?= $chamado['prioridade']==='baixa'?'selected':'' ?>>🟢 Baixa (SLA 72h)</option>
-                    <option value="media"   <?= $chamado['prioridade']==='media'?'selected':'' ?>>🟡 Média (SLA 24h)</option>
-                    <option value="alta"    <?= $chamado['prioridade']==='alta'?'selected':'' ?>>🟠 Alta (SLA 8h)</option>
-                    <option value="critica" <?= $chamado['prioridade']==='critica'?'selected':'' ?>>🔴 Crítica (SLA 2h)</option>
+                    <option value="baixa"   <?= $chamado['prioridade']==='baixa'?'selected':'' ?>>🟢 Baixa</option>
+                    <option value="media"   <?= $chamado['prioridade']==='media'?'selected':'' ?>>🟡 Média</option>
+                    <option value="alta"    <?= $chamado['prioridade']==='alta'?'selected':'' ?>>🟠 Alta</option>
+                    <option value="critica" <?= $chamado['prioridade']==='critica'?'selected':'' ?>>🔴 Crítica</option>
                   </select>
                 </div>
                 <button type="submit" class="btn btn-warning btn-block btn-sm">Atualizar Prioridade</button>
@@ -344,31 +349,12 @@ $sla = slaStatus($chamado['criado_em'], $chamado['prioridade'], $chamado['status
             </div>
           </div>
 
-          <!-- Info rápida -->
-          <div class="card">
-            <div class="card-header"><span class="card-title">Informações</span></div>
-            <div class="card-body" style="font-size:.8rem">
-              <div style="margin-bottom:.5rem">
-                <span class="text-muted">SLA definido:</span><br>
-                <strong><?= slaHours($chamado['prioridade']) ?> horas</strong>
-              </div>
-              <div style="margin-bottom:.5rem">
-                <span class="text-muted">Abertura:</span><br>
-                <strong><?= date('d/m/Y H:i', strtotime($chamado['criado_em'])) ?></strong>
-              </div>
-              <?php if ($chamado['fechado_em']): ?>
-              <div>
-                <span class="text-muted">Fechamento:</span><br>
-                <strong><?= date('d/m/Y H:i', strtotime($chamado['fechado_em'])) ?></strong>
-              </div>
-              <?php endif; ?>
-            </div>
-          </div>
         </div>
       </div>
     </div>
   </div>
 </div>
+
 <script>
 function toggleSidebar() {
   document.getElementById('admin-sidebar').classList.toggle('open');
