@@ -1,0 +1,17 @@
+# Ignorar configurações sensíveis
+includes/config.php
+
+# Ignorar logs de depuração
+*.log
+sistema_debug.log
+admin/crud_error.log
+admin/ticket_debug.log
+auth_error.log
+
+# Ignorar uploads de clientes
+uploads/*
+!uploads/.htaccess
+
+# Ignorar arquivos temporários e diagnóstico
+diagnostico.php
+insercao_manual_cliente.sql
