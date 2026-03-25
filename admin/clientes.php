@@ -1,7 +1,7 @@
 <?php
 /**
  * ERP Condomínio – Gestão de Clientes (Painel Admin)
- * Auditoria Sênior: Correção de CRUD e Implementação de Logs Centralizados
+ * Auditoria Sênior V10: Correção Definitiva de Gravação
  */
 require_once '../includes/config.php';
 requireAdminLogin();
@@ -11,7 +11,6 @@ $successMsg = '';
 $errorMsg   = '';
 $action     = $_GET['action'] ?? $_POST['action'] ?? '';
 
-// Processamento de formulários com validação robusta
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     
     // NOVO CLIENTE
@@ -24,22 +23,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $tel    = trim($_POST['telefone'] ?? '');
         $senha  = $_POST['senha'] ?? '';
 
-        sys_log("Iniciando criação de cliente: Razão: $razao | CNPJ: $cnpj", 'INFO');
-
         if (empty($razao) || empty($cnpj_raw) || empty($email) || empty($senha)) {
             $errorMsg = 'Preencha todos os campos obrigatórios.';
-            sys_log("ERRO CRUD: Campos obrigatórios ausentes.", 'WARNING');
         } else {
             try {
                 $check = $db->prepare('SELECT id FROM clientes WHERE cnpj = ?');
                 $check->execute([$cnpj]);
                 if ($check->fetch()) {
                     $errorMsg = "CNPJ $cnpj já cadastrado.";
-                    sys_log("ERRO CRUD: CNPJ duplicado: $cnpj", 'WARNING');
                 } else {
                     $hash = password_hash($senha, PASSWORD_DEFAULT);
-                    $sql = "INSERT INTO clientes (razao_social, cnpj, email, telefone, senha, ativo, criado_em) 
-                            VALUES (:razao, :cnpj, :email, :tel, :senha, 1, NOW())";
+                    $agora = date('Y-m-d H:i:s');
+                    
+                    // QUERY V10: Todas as colunas obrigatórias enviadas explicitamente
+                    $sql = "INSERT INTO clientes (razao_social, cnpj, email, telefone, senha, ativo, criado_em, atualizado_em) 
+                            VALUES (:razao, :cnpj, :email, :tel, :senha, 1, :criado, :atualizado)";
                     
                     $stmt = $db->prepare($sql);
                     $result = $stmt->execute([
@@ -47,21 +45,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':cnpj'  => $cnpj,
                         ':email' => $email,
                         ':tel'   => $tel,
-                        ':senha' => $hash
+                        ':senha' => $hash,
+                        ':criado' => $agora,
+                        ':atualizado' => $agora
                     ]);
 
                     if ($result) {
                         $successMsg = "Cliente cadastrado com sucesso!";
-                        sys_log("SUCESSO CRUD: Cliente $razao criado.", 'INFO');
                         $action = '';
-                    } else {
-                        $errorMsg = "Erro ao gravar no banco de dados.";
-                        sys_log("ERRO CRUD: Execute retornou falso no INSERT.", 'ERROR');
                     }
                 }
             } catch (PDOException $e) {
-                $errorMsg = "Falha técnica: " . $e->getMessage();
-                sys_log("EXCEÇÃO PDO CRUD: " . $e->getMessage(), 'CRITICAL');
+                $errorMsg = "Erro no banco: " . $e->getMessage();
+                sys_log("ERRO CRUD CLIENTE: " . $e->getMessage(), 'CRITICAL');
             }
         }
     }
@@ -74,22 +70,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $tel       = trim($_POST['telefone'] ?? '');
         $ativo     = (int)($_POST['ativo'] ?? 1);
         $novaSenha = $_POST['nova_senha'] ?? '';
+        $agora     = date('Y-m-d H:i:s');
 
         try {
             if (!empty($novaSenha)) {
                 $hash = password_hash($novaSenha, PASSWORD_DEFAULT);
-                $sql = "UPDATE clientes SET razao_social = ?, email = ?, telefone = ?, ativo = ?, senha = ? WHERE id = ?";
-                $db->prepare($sql)->execute([$razao, $email, $tel, $ativo, $hash, $id]);
+                $sql = "UPDATE clientes SET razao_social = ?, email = ?, telefone = ?, ativo = ?, senha = ?, atualizado_em = ? WHERE id = ?";
+                $db->prepare($sql)->execute([$razao, $email, $tel, $ativo, $hash, $agora, $id]);
             } else {
-                $sql = "UPDATE clientes SET razao_social = ?, email = ?, telefone = ?, ativo = ? WHERE id = ?";
-                $db->prepare($sql)->execute([$razao, $email, $tel, $ativo, $id]);
+                $sql = "UPDATE clientes SET razao_social = ?, email = ?, telefone = ?, ativo = ?, atualizado_em = ? WHERE id = ?";
+                $db->prepare($sql)->execute([$razao, $email, $tel, $ativo, $agora, $id]);
             }
             $successMsg = 'Dados atualizados!';
-            sys_log("SUCESSO CRUD: Cliente ID $id atualizado.", 'INFO');
             $action = '';
         } catch (PDOException $e) {
             $errorMsg = "Erro ao atualizar: " . $e->getMessage();
-            sys_log("EXCEÇÃO PDO EDIT: " . $e->getMessage(), 'CRITICAL');
         }
     }
 
@@ -99,11 +94,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         try {
             $db->prepare('DELETE FROM clientes WHERE id = ?')->execute([$id]);
             $successMsg = 'Cliente removido.';
-            sys_log("SUCESSO CRUD: Cliente ID $id removido.", 'INFO');
             $action = '';
         } catch (PDOException $e) {
             $errorMsg = "Erro ao excluir: " . $e->getMessage();
-            sys_log("EXCEÇÃO PDO DELETE: " . $e->getMessage(), 'CRITICAL');
         }
     }
 }

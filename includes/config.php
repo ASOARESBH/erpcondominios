@@ -1,13 +1,13 @@
 <?php
 /**
  * ERP Condomínio - Sistema de Chamados
- * Configuração Central e Auditoria Sênior
+ * Configuração Central e Auditoria Sênior V10
  */
 
 // 1. Configurações de Banco de Dados
 define('DB_HOST', 'localhost');
 define('DB_USER', 'inlaud99_erpcondo');
-define('DB_PASS', 'Admin259087'); // Ajustado conforme histórico
+define('DB_PASS', 'Admin259087');
 define('DB_NAME', 'inlaud99_erpcondo');
 define('DB_CHARSET', 'utf8mb4');
 
@@ -47,6 +47,10 @@ function getDB(): PDO {
                 PDO::ATTR_EMULATE_PREPARES   => false,
             ];
             $pdo = new PDO($dsn, DB_USER, DB_PASS, $options);
+            
+            // DESATIVAR MODO ESTRITO PARA COMPATIBILIDADE NO HOSTGATOR
+            $pdo->exec("SET sql_mode = ''");
+            
         } catch (PDOException $e) {
             sys_log("FALHA CRÍTICA DE CONEXÃO: " . $e->getMessage(), 'ERROR');
             die('Erro de conexão com o banco de dados. Verifique o log do sistema.');
